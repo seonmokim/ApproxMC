@@ -47,12 +47,14 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/GitSHA1.cpp.in" "${CMAKE_CURRENT_BIN
 if (NOT EMSCRIPTEN)
     add_executable(approxmc
         approxmc.cpp
+        pf.cpp
         main.cpp
         ${CMAKE_CURRENT_BINARY_DIR}/GitSHA1.cpp
     )
 else()
     add_executable(approxmc
         approxmc.cpp
+        pf.cpp        
         main_min.cpp
         ${CMAKE_CURRENT_BINARY_DIR}/GitSHA1.cpp
     )

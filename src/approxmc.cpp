@@ -48,6 +48,7 @@
 #include "cryptominisat5/cryptominisat.h"
 #include "cryptominisat5/solvertypesmini.h"
 #include "GitSHA1.h"
+#include "pf.h"
 
 using std::cout;
 using std::cerr;
@@ -272,6 +273,35 @@ int AppMC::solve(AppMCConfig _conf)
     return correctReturnValue(l_True);
 }
 
+int AppMC::solve_searchmc(AppMCConfig _conf)
+{
+    conf = _conf;
+
+    openLogFile();
+    randomEngine.seed(conf.seed);
+    total_runtime = cpuTimeTotal();
+    cout << "[searchmc] Using start iteration " << conf.start_iter << endl;
+
+    SATCount solCount;
+    bool finished = count_searchmc(solCount);
+    assert(finished);
+
+    cout << "[searchmc] FINISHED AppMC T: " << (cpuTimeTotal() - startTime) << " s" << endl;
+    if (solCount.hashCount == 0 && solCount.cellSolCount == 0) {
+        cout << "[appmc] Formula was UNSAT " << endl;
+    }
+
+    if (conf.verb > 2) {
+        solver->print_stats();
+    }
+
+    cout << "[appmc] Number of solutions is: "
+    << solCount.cellSolCount
+     << " x 2^" << solCount.hashCount << endl;
+
+    return correctReturnValue(l_True);
+}
+
 void AppMC::SetHash(uint32_t clausNum, std::map<uint64_t,Lit>& hashVars, vector<Lit>& assumps)
 {
     if (clausNum < assumps.size()) {
@@ -445,6 +475,131 @@ bool AppMC::count(SATCount& count)
 
     count.cellSolCount = medSolCount;
     count.hashCount = minHash;
+    return true;
+}
+
+bool AppMC::count_searchmc(SATCount& count)
+{
+    count.clear();
+    vector<uint64_t> numHashList;
+    vector<int64_t> numCountList;
+    vector<Lit> assumps;
+    
+    PF* pf = new PF;
+
+    uint64_t c = 1; 
+    double delta = (double)conf.sampling_set.size();
+
+    double mu = (double)conf.sampling_set.size() / 2;
+    double sig = 1000;
+    double mu_prime;
+    double sig_prime;
+    
+    double confidence = conf.cl+(1-conf.cl) * conf.alpha;
+
+    int hashCount = (double)conf.sampling_set.size() / 2;
+    int iter_cnt = 0;
+
+    double lb = 0;
+    double ub = (double)conf.sampling_set.size();
+
+    double sound_lb = 0;
+    double sound_ub = (double)conf.sampling_set.size();
+
+    struct Particles prior[NUM_SAMPLES];
+    struct Particles posterior[NUM_SAMPLES];
+    
+    cout << "[searchmc] Setting up uniform prior" << endl;
+    
+    pf->get_uniform_prior(prior, (int)conf.sampling_set.size(), NUM_SAMPLES);
+    
+    while (delta > conf.thres) {
+        map<uint64_t,Lit> hashVars; //map assumption var to XOR hash
+        
+        if (iter_cnt != 0) {        
+            //Compute C and K
+            c = ceil(pow((pow(2,sig)+1)/(pow(2,sig)-1),2));
+            hashCount = floor(mu - log2(c)*0.5);
+            if (hashCount < 0) {
+                hashCount = 0;
+                c = UINT64_MAX;
+            } // end of Compute C and K
+        }
+
+        SetHash(hashCount,hashVars,assumps);
+        int64_t currentNumSolutions = bounded_sol_count(c, assumps, hashCount);
+        
+        //UpdateDist
+        cout << "[searchmc] Updating distribution" << endl;
+        if (currentNumSolutions < (int64_t)c) {
+            pf->estimate_posterior_eq_n(hashCount, currentNumSolutions, prior, NUM_SAMPLES);
+        } else {
+            pf->estimate_posterior_ge_n(hashCount, currentNumSolutions, prior, NUM_SAMPLES);
+        }
+
+        cout << "[searchmc] Sampling" << endl;
+        pf->sampling(prior, posterior, conf.sampling_set.size(), NUM_SAMPLES);
+
+        mu_prime = pf->mean_particle(posterior, NUM_SAMPLES);
+        sig_prime = pf->stddev_particle(posterior, NUM_SAMPLES);
+
+        cout << iter_cnt << ": Old Mu = " << mu << ", Old Sigma = " << sig << ", nSat = " << currentNumSolutions << ", k = " << hashCount << ", c = " << c << endl;
+        cout << iter_cnt << ": New Mu = " << mu_prime << ", New Sigma = " << sig_prime << endl;
+        
+        //pf->print_inf(prior, NUM_SAMPLES);
+        //pf->print_weight(prior, NUM_SAMPLES);
+
+        uint32_t center_index = pf->get_center_index(posterior, NUM_SAMPLES, mu_prime);
+        
+        double sum_pdf_ub = pf->sum_pdf(posterior, center_index, NUM_SAMPLES, NUM_SAMPLES);
+        double sum_pdf_lb = pf->sum_pdf(posterior, 0, center_index, NUM_SAMPLES);
+        double uconf, lconf;
+        if (sum_pdf_ub < (confidence / 2)) {
+            uconf = sum_pdf_ub - ((1 - confidence) / 2);
+            lconf = confidence - uconf;
+            //printf("Lower conf is %g\n", lconf);
+            lb = pf->get_lb(posterior, center_index, NUM_SAMPLES, lconf);
+            ub = pf->get_ub(posterior, center_index, NUM_SAMPLES, uconf);
+        } else if (sum_pdf_lb < (confidence / 2)) {
+            lconf = sum_pdf_lb - ((1 - confidence) / 2);
+            uconf = confidence - lconf;
+            //printf("Upper conf is %g\n", uconf);
+            lb = pf->get_lb(posterior, center_index, NUM_SAMPLES, lconf);
+            ub = pf->get_ub(posterior, center_index, NUM_SAMPLES, uconf);
+        } else {
+            lb = pf->get_lb(posterior, center_index, NUM_SAMPLES, confidence/2);
+            ub = pf->get_ub(posterior, center_index, NUM_SAMPLES, confidence/2);
+        }
+           
+        cout << iter_cnt << ": Lower Bound = " << lb << ", Upper Bound = " << ub << endl;
+
+        mu = mu_prime;
+        sig = sig_prime;
+        iter_cnt++;
+        
+        if (conf.searchmc == 1) {
+            delta = ub - lb;
+        } else {
+            delta = sound_ub - sound_lb;
+        }
+        
+        if ( c > 41 && (uint64_t)currentNumSolutions < c && currentNumSolutions > 0) {
+            count.cellSolCount = currentNumSolutions;
+            count.hashCount = hashCount;
+            double epsilon = (8.4 + sqrt(70.56 + 33.6*c)) / (2 * c);
+            sound_lb = hashCount+log2(currentNumSolutions)+log2(1-epsilon);
+            sound_ub = hashCount+log2(currentNumSolutions)+log2(1+epsilon);
+        }
+        cout << iter_cnt << ": Sound Lower Bound = " << sound_lb << ", Sound Upper Bound = " << sound_ub << endl;
+        //end of UpdateDist
+
+        assumps.clear();
+    }
+    
+//    if (conf.searchmc == 2) {
+
+//    }
+
     return true;
 }
 

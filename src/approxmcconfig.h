@@ -31,11 +31,13 @@
 #include <vector>
 
 struct AppMCConfig {
+    double cl = 0.6;
+    double thres = 1.8;
+    double alpha = 0.5;
+    uint32_t searchmc = 0;
     uint32_t start_iter = 0;
     uint32_t threshold = 72; //precision
-    double epsilon = 0.80;
     uint32_t measurements = 9; //confidence of 0.81
-    double delta = 0.2;
     uint32_t num_threads = 1;
     uint32_t startiter = 0;
     bool sparse = false;

@@ -61,6 +61,7 @@ public:
     }
 
     int solve(AppMCConfig _conf);
+    int solve_searchmc(AppMCConfig _conf);
     string GenerateRandomBits(const uint32_t size, const uint32_t numhashes);
     string binary(const uint32_t x, const uint32_t length);
     bool gen_rhs();
@@ -71,6 +72,7 @@ public:
 
 private:
     AppMCConfig conf;
+    bool count_searchmc(SATCount& count);
     bool count(SATCount& count);
     void add_scalmc_options();
     bool ScalAppMC(SATCount& count);
